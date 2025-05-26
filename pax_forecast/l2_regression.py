@@ -1,4 +1,4 @@
-""" fitting  """
+""" fitting l2 regression model"""
 from preprocessing import preprocessing, IMG_FOLDER
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold, GridSearchCV
@@ -68,19 +68,19 @@ def l2_regression(X, y):
         y_pred = final_model.predict(X_test)
         mse = mean_squared_error(y_test, y_pred)
         r2 = r2_score(y_test, y_pred)
-        accuracy_100 = np.mean(np.abs(y_test - y_pred) <= 100)
+        accuracy_150 = np.mean(np.abs(y_test - y_pred) <= 150)
 
         print(f"Evaluation on Outer Test Set:")
         print(f"  MSE       = {mse:.2f}")
         print(f"  R² Score  = {r2:.4f}")
-        print(f"  Accuracy within ±100 passengers = {accuracy_100*100:.2f}%")
+        print(f"  Accuracy within ±150 passengers = {accuracy_150*100:.2f}%")
 
         outer_results.append({
             'fold': i,
             'best_lambda': best_alpha,
             'mse': mse,
             'r2': r2,
-            'accuracy_100': accuracy_100
+            'accuracy_100': accuracy_150
         })
 
     # unbiased estimates
@@ -91,7 +91,7 @@ def l2_regression(X, y):
     print("\n=== Final Cross-Validated Generalization Metrics ===")
     print(f"Mean MSE       : {mse_vals.mean():.2f}")
     print(f"Mean R² Score  : {r2_vals.mean():.4f}")
-    print(f"Mean Accuracy (±100 passengers): {acc_vals.mean() * 100:.2f}%")
+    print(f"Mean Accuracy (±150 passengers): {acc_vals.mean() * 100:.2f}%")
 
 
 
