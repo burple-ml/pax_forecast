@@ -1,3 +1,4 @@
+""" fitting  """
 from preprocessing import preprocessing, IMG_FOLDER
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold, GridSearchCV
@@ -51,7 +52,7 @@ def l2_regression(X, y):
         plt.grid(True)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(os.path.join(IMG_FOLDER, f"{i}-fold-lambda.png"))
+        plt.savefig(os.path.join(IMG_FOLDER, f"hyperparameter-ridgeregression-fold-{i}.png"))
         plt.show()
 
         print(f"Best lambda for Outer Fold {i}: {best_alpha:.4f}")
