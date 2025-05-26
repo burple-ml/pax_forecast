@@ -1,173 +1,105 @@
-# let us import the data first
-
-import pandas as pd
+from preprocessing import preprocessing, IMG_FOLDER
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import KFold, GridSearchCV
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error, r2_score
 import numpy as np
-import os
-import matplotlib
 import matplotlib.pyplot as plt
-matplotlib.use('TkAgg')
-import seaborn as sns
+import os
 
-# change these according to pwd
-AIRPORT_DATA = 'data/case_ds.csv'
-IMG_FOLDER = 'img'
+def l2_regression(X, y):
+    # Grid search space
+    alphas = np.logspace(-3, 3, 20)
 
-def import_data(path=AIRPORT_DATA):
-    ''' imports and adds some temporal variables based on the date string '''
-    df = pd.read_csv(path, delimiter=';')
-    df['real_date'] = pd.to_datetime(df['Date'], format='%Y%m%d')
-    df.set_index('Date', inplace=True)
-    total_rows = len(df)
-    print("Total rows:", total_rows)
+    # Outer 5-fold CV
+    outer_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+    outer_results = []
 
-    # Extract components from the datetime column
-    df['Year'] = df['real_date'].dt.year
-    df['Month'] = df['real_date'].dt.month
-    df['Day'] = df['real_date'].dt.day
-    df['Week'] = df['real_date'].dt.isocalendar().week   #df['Week'] = df['real_date'].dt.strftime('%W') 
-    df['DayOfWeek'] = df['real_date'].dt.dayofweek
-    df['DayName'] = df['real_date'].dt.day_name()   
+    for i, (train_idx, test_idx) in enumerate(outer_cv.split(X), 1):
+        print(f"\n=== Outer Fold {i} ===")
+
+        # still outer split
+        X_train, y_train = X.iloc[train_idx], y.iloc[train_idx]
+        X_test, y_test = X.iloc[test_idx], y.iloc[test_idx]
         
-    # Printing min and max of seats
-    print("Min of seats:", df['Seats'].min())
-    print("Max of seats:", df['Seats'].max())
+        # Pipeline
+        pipeline = Pipeline([
+            ('scaler', StandardScaler()),
+            ('ridge', Ridge())
+        ])
 
-    # cleaning up / data rensning: 
-    filtered_rows = df[df['PAX'] - df['Seats'] >= 0]
-    print("Num of rows where pax will be adjusted to seats", len(filtered_rows))
-    df.loc[df['PAX'] - df['Seats'] >= 1, 'PAX'] = df.loc[df['PAX'] - df['Seats'] >= 1, 'Seats'].values
-    
-    return df
+        # Inner CV with grid search
+        param_grid = {'ridge__alpha': alphas}
+        inner_cv = KFold(n_splits=5, shuffle=True, random_state=42)
+        grid = GridSearchCV(pipeline, param_grid, cv=inner_cv,
+                            scoring='neg_mean_squared_error', return_train_score=True)
+        grid.fit(X_train, y_train)
 
+        mean_mse = -grid.cv_results_['mean_test_score']
+        std_mse = grid.cv_results_['std_test_score']
+        best_alpha = grid.best_params_['ridge__alpha']
 
-def basic_feature_engineering(df):
-    """ make new features """
-    # Percentage occupancy per day
-    df['PCT_occupied'] = (df['PAX'] / df['Seats']) * 100
+        # Plot
+        plt.figure(figsize=(8, 5))
+        plt.semilogx(alphas, mean_mse, marker='o', label='Mean CV MSE')
+        plt.fill_between(alphas, mean_mse - std_mse, mean_mse + std_mse, alpha=0.2)
+        plt.axvline(best_alpha, color='red', linestyle='--', label=f'Best λ = {best_alpha:.4f}')
+        plt.title(f'Inner 5-Fold CV: MSE vs Lambda (Outer Fold {i})')
+        plt.xlabel('Lambda (Alpha)')
+        plt.ylabel('Mean CV MSE')
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(IMG_FOLDER, f"{i}-fold-lambda.png"))
+        plt.show()
 
-    # Printing unique nominal values 
-    print("Unique status values:", df['Status'].unique())
-    print("Number of unique statuses:", df['Status'].nunique())
-    print("Unique route values:", df['Route'].nunique())
-    print("Number of unique airports:", df['Airport'].nunique()) 
-    print("Der er naturligvis høj correlation mellem airport og routes: ", df.groupby(['Airport', 'Route']).ngroups)
-    
-    # Modelling average percentage occupancy per week as a feature to capture seasonal trends
-    df['Avg_PCT_occupied_weekly'] = (
-    df.groupby(['Route', 'Airport', 'Week'])['PCT_occupied']
-    .transform('mean'))
+        print(f"Best lambda for Outer Fold {i}: {best_alpha:.4f}")
 
-    return df
+        # Train with best lambda
+        final_model = Pipeline([
+            ('scaler', StandardScaler()),
+            ('ridge', Ridge(alpha=best_alpha))
+        ])
+        final_model.fit(X_train, y_train)
+        
+        # Evaluate on unused test
+        y_pred = final_model.predict(X_test)
+        mse = mean_squared_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        accuracy_100 = np.mean(np.abs(y_test - y_pred) <= 100)
 
+        print(f"Evaluation on Outer Test Set:")
+        print(f"  MSE       = {mse:.2f}")
+        print(f"  R² Score  = {r2:.4f}")
+        print(f"  Accuracy within ±100 passengers = {accuracy_100*100:.2f}%")
 
-def summary_statistics(df):
+        outer_results.append({
+            'fold': i,
+            'best_lambda': best_alpha,
+            'mse': mse,
+            'r2': r2,
+            'accuracy_100': accuracy_100
+        })
 
-    # making some box plots to capture variance
-    df[['Seats', 'PAX']].plot(kind='box')
-    plt.title('Box Plot of seats and passengers')
-    plt.ylabel('Number of seats')
-    plt.savefig(os.path.join(IMG_FOLDER,'boxplot-seats-pax.png'))
-    #plt.show()
+    # unbiased estimates
+    mse_vals = np.array([res['mse'] for res in outer_results])
+    r2_vals = np.array([res['r2'] for res in outer_results])
+    acc_vals = np.array([res['accuracy_100'] for res in outer_results])
 
-    # Find the most popular 3 airport, route pairs
-    pair_counts = df.groupby(['Route', 'Airport']).size().reset_index(name='count')
-    most_common_pairs = pair_counts.sort_values(by='count', ascending=False).head(3)
-    print(most_common_pairs)
-    top_pairs = set(
-        tuple(x) for x in most_common_pairs[['Route', 'Airport']].head(3).values
-    )
-
-    # show seasonality in the top 3 airport, routes
-    df_top = df[df[['Route', 'Airport']].apply(tuple, axis=1).isin(top_pairs)]
-    df_grouped = (
-        df_top
-        .groupby(['Route', 'Airport', 'Week'], as_index=False)['Avg_PCT_occupied_weekly']
-        .first()
-    )
-
-    plt.figure(figsize=(10, 6))
-
-    sns.lineplot(
-        data=df_grouped,
-        x='Week',
-        y='Avg_PCT_occupied_weekly',
-        hue='Route',
-        style='Airport',
-        markers=True,
-        dashes=False
-    )
-
-    plt.title('Seasonality in the occupancy of flights(Top 3 Route/Airport Pairs)')
-    plt.ylabel('Average pct. occupied seats')
-    plt.xlabel('Week Number')
-    plt.grid(True)
-    plt.legend(title='Route / Airport', bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout()
-    plt.savefig(os.path.join(IMG_FOLDER,'seasonality-occupancy.png'))
-    plt.show()
-
-    return df
-
-
-def adv_feature_engineering(df):
-    ''' other features added here and redundant ones removed '''
-    # the current existing columns
-    print("the current columns are: ", df.columns)
-    
-    # the obvious one hot encoding of Status
-    # One-hot encode status column
-    status_dummies = pd.get_dummies(df['Status'], prefix='status').astype(int)
-
-    # Concatenate back to the original DataFrame
-    df = pd.concat([df, status_dummies], axis=1)
-
-
-    # compute 3 weeks rolling average for occupancy mean
-    weekly_avg = (
-        df.groupby(['Route', 'Airport', 'Year', 'Week'], as_index=False)['PCT_occupied']
-        .mean()
-        .rename(columns={'PCT_occupied': 'Weekly_PCT_occupied'}))
-    weekly_avg.sort_values(['Route', 'Airport', 'Year', 'Week'], inplace=True)
-    weekly_avg['Rolling_PCT_occupied_3w'] = (
-        weekly_avg
-        .groupby(['Route', 'Airport'])['Weekly_PCT_occupied']
-        .shift(1)
-        .rolling(window=3, min_periods=1)
-        .mean()
-        .reset_index(drop=True))
-    weekly_avg['Rolling_PCT_occupied_3w'].fillna(weekly_avg['Weekly_PCT_occupied'])
-    original_index = df.index
-    df = df.merge(weekly_avg[['Route', 'Airport', 'Year', 'Week', 'Rolling_PCT_occupied_3w']],
-                on=['Route', 'Airport', 'Year', 'Week'],
-                how='left')
-    df.index = original_index
-    print(df)
-
-    df['flight_id'] = df['Route'].astype(str) + '__' + df['Airport'].astype(str)
-    # aggregating 
-    daily_agg = (
-        df.groupby('Date').agg(
-            PAX=('PAX', 'sum'),
-            num_flights=('flight_id', 'nunique'),
-            Avg_Rolling_PCT_3w=('Rolling_PCT_occupied_3w', 'mean'),
-            Seats_total=('Seats', 'sum'),
-            Week=('Week', 'first'),
-            DayOfWeek=('DayOfWeek', 'first'),
-            Year=('Year', 'first'),
-        ) 
-    ).reset_index()
-
-    # List one-hot columns explicitly or detect them
-    status_cols = [col for col in df.columns if col.startswith('status_')]
-    daily_status_agg = df.groupby('Date')[status_cols].sum().reset_index()
-    flight_agg_df = pd.merge(daily_agg, daily_status_agg, on='Date', how='inner')
-    return flight_agg_df
-
+    print("\n=== Final Cross-Validated Generalization Metrics ===")
+    print(f"Mean MSE       : {mse_vals.mean():.2f}")
+    print(f"Mean R² Score  : {r2_vals.mean():.4f}")
+    print(f"Mean Accuracy (±100 passengers): {acc_vals.mean() * 100:.2f}%")
 
 
 
 if __name__ == '__main__':
-    df = import_data()
-    basic_feature_engineering(df)
-    summary_statistics(df)
-    adv_feature_engineering(df)
+    df = preprocessing()
+    df.drop('Date', axis=1, inplace=True)
+    print(df,"\n" , df.columns)
+    print(df.dtypes)
+    X = df.drop('PAX', axis=1)
+    Y = df['PAX']
+    print(X,Y)
+    l2_regression(X, Y)
